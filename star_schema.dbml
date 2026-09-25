@@ -1,0 +1,37 @@
+// ข้อมูลการเชื่อมโยงมิติเชิงเวลาและความถี่บิลขายสไตล์วิเคราะห์ความเร็ว (Sales Velocity)
+
+Table fact_sales_velocity {
+  OrderID int [note: "เลขที่ใบสั่งซื้อหลัก"]
+  CustomerID varchar
+  ProductID int [ref: > dim_products.ProductID]
+  ShipperID int [ref: > dim_shippers.ShipperID]
+  OrderDateKey int [ref: > dim_date.DateKey]
+  Quantity int [note: "ปริมาณสินค้าที่ถูกสั่งซื้อ (ตัวชี้วัดหลัก)"]
+  UnitPrice decimal
+  Discount decimal
+  Freight decimal
+}
+
+Table dim_products {
+  ProductID int [primary key]
+  ProductName varchar
+  CategoryID int
+  QuantityPerUnit varchar
+  UnitPrice decimal
+}
+
+Table dim_shippers {
+  ShipperID int [primary key]
+  ShipperName varchar
+}
+
+Table dim_date {
+  DateKey int [primary key, note: "YYYYMMDD"]
+  FullDate date
+  Year int
+  Month int
+  MonthName varchar
+  WeekOfYear int [note: "ใช้วิเคราะห์หาความถี่ตามช่วงสัปดาห์"]
+  DayOfWeek int [note: "1=Monday, 7=Sunday"]
+  DayName varchar
+}

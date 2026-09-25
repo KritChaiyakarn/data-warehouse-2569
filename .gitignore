@@ -1,0 +1,14 @@
+__pycache__/
+.venv/
+*.db
+*.csv
+*.json
+*.txt
+*.xlsx
+*.docx
+lakehouse/
+northwind_thai_large_data/
+superset/
+repomix-output.xml
+repomix-output.md
+.env

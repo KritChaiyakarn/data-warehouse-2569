@@ -1,0 +1,128 @@
+version: '3.8'
+
+networks:
+  lakehouse-net:
+    name: lakehouse-net
+    driver: bridge
+
+services:
+  # --- METADATA LAYER: Shared Postgres DB for Superset & Hive Metastore State ---
+  metadata-db:
+    image: postgres:15-alpine
+    container_name: metadata-db
+    environment:
+      POSTGRES_USER: lakehouse_admin
+      POSTGRES_PASSWORD: meta_password_123
+      POSTGRES_MULTIPLE_DATABASES: superset,metastore
+    volumes:
+      - ./volumes/postgres_metadata:/var/lib/postgresql/data
+      # Entrypoint script to provision both databases on startup
+      - ./config/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - lakehouse-net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakehouse_admin -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- STORAGE LAYER: S3-Compatible Object Store ---
+  minio:
+    image: minio/minio:RELEASE.2024-01-11T05-49-32Z
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin123
+      MINIO_ROOT_PASSWORD: adminsecret123
+    volumes:
+      - ./volumes/minio_storage:/data
+    networks:
+      - lakehouse-net
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Automatically provision the initial warehouse bucket inside MinIO
+  minio-create-bucket:
+    image: minio/mc:RELEASE.2024-01-11T06-31-08Z
+    container_name: minio-bucket-provisioner
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - lakehouse-net
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 admin123 adminsecret123;
+      /usr/bin/mc mb myminio/warehouse || true;
+      exit 0;
+      "
+
+  # --- CATALOG LAYER: Apache Hive Metastore ---
+  hive-metastore:
+    image: bitsondatadev/hive-metastore:3.1.2
+    container_name: hive-metastore
+    depends_on:
+      metadata-db:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: postgres
+      METASTORE_DB_URL: jdbc:postgresql://metadata-db:5432/metastore
+      METASTORE_DB_USER: lakehouse_admin
+      METASTORE_DB_PASS: meta_password_123
+      AWS_ACCESS_KEY_ID: admin123
+      AWS_SECRET_ACCESS_KEY: adminsecret123
+      MINIO_ENDPOINT: http://minio:9000
+    ports:
+      - "9083:9083"
+    networks:
+      - lakehouse-net
+
+  # --- COMPUTE ENGINE: Trino MPP SQL Engine ---
+  trino:
+    image: trinodb/trino:438
+    container_name: trino
+    depends_on:
+      minio:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config/trino/node.properties:/etc/trino/node.properties
+      - ./config/trino/jvm.config:/etc/trino/jvm.config
+      - ./config/trino/config.properties:/etc/trino/config.properties
+      - ./config/trino/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties
+    networks:
+      - lakehouse-net
+
+  # --- BI LAYER: Apache Superset ---
+  superset:
+    image: apache/superset:3.1.0
+    container_name: superset
+    ports:
+      - "8088:8088"
+    depends_on:
+      metadata-db:
+        condition: service_healthy
+    environment:
+      SUPERSET_SECRET_KEY: "change_this_to_a_robust_random_string_in_production"
+      SQLALCHEMY_DATABASE_URI: "postgresql://lakehouse_admin:meta_password_123@metadata-db:5432/superset"
+    volumes:
+      - ./config/superset:/app/docker
+    networks:
+      - lakehouse-net
+    # Inits the superset DB app, provisions admin user, and creates default roles
+    entrypoint: >
+      /bin/sh -c "
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@lakehouse.local --password admin &&
+      superset init &&
+      /usr/bin/run-server.sh
+      "
